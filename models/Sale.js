@@ -25,6 +25,12 @@ const saleItemSchema = new mongoose.Schema({
 });
 
 const saleSchema = new mongoose.Schema({
+  // Campo para relación con tenant
+  tenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tenant',
+    required: true
+  },
   date: {
     type: Date,
     default: Date.now
@@ -47,6 +53,11 @@ const saleSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Índices compuestos para búsquedas eficientes
+saleSchema.index({ tenantId: 1, date: -1 });
+saleSchema.index({ tenantId: 1, customer: 1 });
+saleSchema.index({ tenantId: 1, _id: 1 });
 
 const Sale = mongoose.model('Sale', saleSchema);
 

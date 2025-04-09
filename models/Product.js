@@ -2,6 +2,12 @@
 const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
+  // Campo para relación con tenant
+  tenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tenant',
+    required: true
+  },
   name: {
     type: String,
     required: true,
@@ -40,6 +46,11 @@ const productSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Índices compuestos para búsquedas eficientes
+productSchema.index({ tenantId: 1, category: 1 });
+productSchema.index({ tenantId: 1, name: 1 });
+productSchema.index({ tenantId: 1, _id: 1 });
 
 const Product = mongoose.model('Product', productSchema);
 

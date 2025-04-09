@@ -15,12 +15,39 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'user'],
-    default: 'user'
-  }
+    enum: ['superAdmin', 'tenantAdmin', 'tenantManager', 'tenantUser'],
+    default: 'tenantUser'
+  },
+  // Campo para relación con tenant
+  tenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tenant',
+    // null para superAdmin, obligatorio para roles de tenant
+  },
+  email: {
+    type: String,
+    trim: true
+  },
+  firstName: {
+    type: String,
+    trim: true
+  },
+  lastName: {
+    type: String,
+    trim: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  lastLogin: Date
 }, {
   timestamps: true
 });
+
+// Índices compuestos para búsquedas eficientes
+userSchema.index({ tenantId: 1, username: 1 });
+userSchema.index({ tenantId: 1, role: 1 });
 
 // Middleware para hashear la contraseña antes de guardar
 userSchema.pre('save', async function(next) {

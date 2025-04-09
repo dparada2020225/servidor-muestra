@@ -25,6 +25,12 @@ const purchaseItemSchema = new mongoose.Schema({
 });
 
 const purchaseSchema = new mongoose.Schema({
+  // Campo para relación con tenant
+  tenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tenant',
+    required: true
+  },
   date: {
     type: Date,
     default: Date.now
@@ -47,6 +53,11 @@ const purchaseSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Índices compuestos para búsquedas eficientes
+purchaseSchema.index({ tenantId: 1, date: -1 });
+purchaseSchema.index({ tenantId: 1, supplier: 1 });
+purchaseSchema.index({ tenantId: 1, _id: 1 });
 
 const Purchase = mongoose.model('Purchase', purchaseSchema);
 
