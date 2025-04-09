@@ -12,7 +12,12 @@ let usersCache = {
 // Generar token JWT
 const generateToken = (user) => {
   return jwt.sign(
-    { id: user._id, username: user.username, role: user.role },
+    { 
+      id: user._id, 
+      username: user.username, 
+      role: user.role,
+      tenantId: user.tenantId // Incluir tenantId en el token
+    },
     process.env.JWT_SECRET || 'your_jwt_secret_key',
     { expiresIn: '24h' }
   );
@@ -22,17 +27,29 @@ const generateToken = (user) => {
 exports.register = async (req, res) => {
   try {
     // Verificar si el usuario que está creando es admin (solo admins pueden crear otros admins)
-    if (req.body.role === 'admin') {
+    if (req.body.role === 'admin' || req.body.role === 'tenantAdmin') {
       // Si no hay token o el usuario no es admin, rechazar
-      if (!req.user || req.user.role !== 'admin') {
+      if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin' && req.user.role !== 'superAdmin')) {
         return res.status(403).json({ message: 'No tienes permiso para crear administradores' });
       }
     }
 
     const { username, password, role } = req.body;
     
-    // Verificar si el usuario ya existe
-    const existingUser = await User.findOne({ username });
+    // Obtener tenantId del contexto actual
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    // Si no es superAdmin, se requiere tenantId
+    if (!tenantId && req.user.role !== 'superAdmin') {
+      return res.status(400).json({ message: 'Se requiere tenant para crear usuario' });
+    }
+    
+    // Verificar si el usuario ya existe en este tenant
+    const existingUser = await User.findOne({ 
+      username,
+      ...(tenantId ? { tenantId } : {})
+    });
+    
     if (existingUser) {
       return res.status(400).json({ message: 'El nombre de usuario ya está en uso' });
     }
@@ -41,7 +58,8 @@ exports.register = async (req, res) => {
     const newUser = new User({
       username,
       password,
-      role: role || 'user' // Por defecto es 'user'
+      role: role || 'tenantUser', // Por defecto es 'tenantUser'
+      tenantId
     });
     
     await newUser.save();
@@ -50,7 +68,8 @@ exports.register = async (req, res) => {
     const userResponse = {
       _id: newUser._id,
       username: newUser.username,
-      role: newUser.role
+      role: newUser.role,
+      tenantId: newUser.tenantId
     };
     
     // Invalidar caché después de crear un nuevo usuario
@@ -68,8 +87,18 @@ exports.login = async (req, res) => {
   try {
     const { username, password } = req.body;
     
+    // Si hay un tenant en el contexto, buscar el usuario en ese tenant
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
     // Buscar usuario
-    const user = await User.findOne({ username });
+    let query = { username };
+    
+    // Solo agregar tenantId al query si existe en el contexto (para subdominios específicos)
+    if (tenantId) {
+      query.tenantId = tenantId;
+    }
+    
+    const user = await User.findOne(query);
     if (!user) {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
@@ -90,7 +119,8 @@ exports.login = async (req, res) => {
       user: {
         _id: user._id,
         username: user.username,
-        role: user.role
+        role: user.role,
+        tenantId: user.tenantId
       }
     });
     
@@ -104,29 +134,54 @@ exports.login = async (req, res) => {
 exports.getAllUsers = async (req, res) => {
   try {
     // Verificar permisos
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin' && req.user.role !== 'superAdmin') {
       return res.status(403).json({ message: 'Acceso denegado' });
+    }
+    
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    // Si no es superAdmin, se requiere tenantId
+    if (!tenantId && req.user.role !== 'superAdmin') {
+      return res.status(400).json({ message: 'Se requiere tenant para listar usuarios' });
     }
     
     // Forzar actualización si se proporciona un parámetro específico
     const forceRefresh = req.query.forceRefresh === 'true';
     
+    // Crear una clave única para la caché basada en tenantId
+    const cacheKey = tenantId ? tenantId.toString() : 'all';
+    
     // Verificar si tenemos datos en caché válidos
     const now = Date.now();
-    if (!forceRefresh && usersCache.data && (now - usersCache.timestamp < usersCache.expiryTime)) {
+    if (!forceRefresh && 
+        usersCache.data && 
+        usersCache.data[cacheKey] && 
+        (now - usersCache.timestamp < usersCache.expiryTime)) {
       console.log('Retornando usuarios desde caché');
       // Añadir encabezados para indicar que se está usando caché
       res.setHeader('X-Cache', 'HIT');
-      return res.status(200).json(usersCache.data);
+      return res.status(200).json(usersCache.data[cacheKey]);
     }
     
     console.log('Consultando usuarios desde base de datos');
     
     // Si no hay caché o expiró, consultar la base de datos
-    const users = await User.find().select('-password').lean();
+    let query = {};
+    
+    // Si es un admin de tenant, solo listar usuarios de su tenant
+    if (tenantId) {
+      query.tenantId = tenantId;
+    }
+    
+    const users = await User.find(query).select('-password').lean();
+    
+    // Inicializar la estructura de caché si es necesario
+    if (!usersCache.data) {
+      usersCache.data = {};
+    }
     
     // Actualizar caché
-    usersCache.data = users;
+    usersCache.data[cacheKey] = users;
     usersCache.timestamp = now;
     
     // Indicar que los datos son frescos
@@ -141,10 +196,23 @@ exports.getAllUsers = async (req, res) => {
 // Obtener información del usuario actual
 exports.getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    // Asegurarse de que el usuario pertenece al tenant actual
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    // Construir query
+    let query = { _id: req.user.id };
+    
+    // Si hay un tenant en el contexto y el usuario no es superAdmin, verificar que pertenezca a este tenant
+    if (tenantId && req.user.role !== 'superAdmin') {
+      query.tenantId = tenantId;
+    }
+    
+    const user = await User.findOne(query).select('-password');
+    
     if (!user) {
       return res.status(404).json({ message: 'Usuario no encontrado' });
     }
+    
     res.status(200).json(user);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener usuario', error: error.message });

@@ -10,8 +10,14 @@ exports.createPurchase = async (req, res) => {
 
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para crear compras' });
+    }
+
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
     }
 
     const { items, supplier } = req.body;
@@ -45,27 +51,32 @@ exports.createPurchase = async (req, res) => {
         total: itemTotal
       });
 
-      // Actualizar stock y precio de compra del producto
-      const product = await Product.findById(item.product).session(session);
+      // Verificar que el producto pertenece al tenant
+      const product = await Product.findOne({
+        _id: item.product,
+        tenantId
+      }).session(session);
       
       if (!product) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(404).json({ message: `Producto con ID ${item.product} no encontrado` });
+        return res.status(404).json({ message: `Producto con ID ${item.product} no encontrado en este tenant` });
       }
 
+      // Actualizar stock y precio de compra del producto
       product.stock += item.quantity;
       product.lastPurchasePrice = item.price;
       await product.save({ session });
     }
 
-    // Crear registro de compra con el usuario actual
+    // Crear registro de compra con el usuario actual y tenant
     const purchase = new Purchase({
       date: new Date(),
       supplier,
       items: purchaseItems,
       totalAmount,
-      user: req.user.id // Usar el ID del usuario que está haciendo la compra
+      user: req.user.id,
+      tenantId
     });
 
     await purchase.save({ session });
@@ -84,12 +95,18 @@ exports.createPurchase = async (req, res) => {
 exports.getAllPurchases = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para ver las compras' });
     }
 
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
     // Filtros para la consulta
-    const filter = {};
+    const filter = { tenantId };
     
     // Filtrar por fecha si se proporcionan startDate y endDate
     if (req.query.startDate && req.query.endDate) {
@@ -127,11 +144,20 @@ exports.getAllPurchases = async (req, res) => {
 exports.getPurchaseById = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para ver esta compra' });
     }
 
-    const purchase = await Purchase.findById(req.params.id)
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
+    const purchase = await Purchase.findOne({
+      _id: req.params.id,
+      tenantId
+    })
       .populate('user', 'username')
       .populate('items.product', 'name');
     

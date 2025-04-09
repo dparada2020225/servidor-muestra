@@ -4,7 +4,14 @@ const Product = require('../models/Product');
 // Obtener todos los productos
 exports.getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find();
+    // Filtrar por tenant
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+    
+    const products = await Product.find({ tenantId });
     res.status(200).json(products);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener productos', error: error.message });
@@ -15,11 +22,22 @@ exports.getAllProducts = async (req, res) => {
 exports.createProduct = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para crear productos' });
     }
 
-    const product = new Product(req.body);
+    // Asociar el producto al tenant actual
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
+    const product = new Product({
+      ...req.body,
+      tenantId
+    });
+    
     await product.save();
     res.status(201).json(product);
   } catch (error) {
@@ -30,10 +48,21 @@ exports.createProduct = async (req, res) => {
 // Obtener un producto por ID
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+    
+    const product = await Product.findOne({
+      _id: req.params.id,
+      tenantId
+    });
+    
     if (!product) {
       return res.status(404).json({ message: 'Producto no encontrado' });
     }
+    
     res.status(200).json(product);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener producto', error: error.message });
@@ -44,18 +73,30 @@ exports.getProductById = async (req, res) => {
 exports.updateProduct = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para actualizar productos' });
     }
 
-    const product = await Product.findByIdAndUpdate(
-      req.params.id,
-      req.body,
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
+    // No permitir cambiar el tenantId
+    const updateData = {...req.body};
+    delete updateData.tenantId;
+
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, tenantId },
+      updateData,
       { new: true, runValidators: true }
     );
+    
     if (!product) {
       return res.status(404).json({ message: 'Producto no encontrado' });
     }
+    
     res.status(200).json(product);
   } catch (error) {
     res.status(400).json({ message: 'Error al actualizar producto', error: error.message });
@@ -66,14 +107,25 @@ exports.updateProduct = async (req, res) => {
 exports.deleteProduct = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para eliminar productos' });
     }
 
-    const product = await Product.findByIdAndDelete(req.params.id);
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
+    const product = await Product.findOneAndDelete({
+      _id: req.params.id,
+      tenantId
+    });
+    
     if (!product) {
       return res.status(404).json({ message: 'Producto no encontrado' });
     }
+    
     res.status(200).json({ message: 'Producto eliminado correctamente' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar producto', error: error.message });

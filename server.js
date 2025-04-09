@@ -8,10 +8,18 @@ const { GridFsStorage } = require('multer-gridfs-storage');
 const Grid = require('gridfs-stream');
 const path = require('path');
 const { connectDB } = require('./db');
+
+// Importar middlewares
+const tenantMiddleware = require('./middleware/tenantMiddleware');
+
+// Importar rutas
 const productRoutes = require('./routes/productRoutes');
 const authRoutes = require('./routes/authRoutes'); 
 const purchaseRoutes = require('./routes/purchaseRoutes');
 const saleRoutes = require('./routes/saleRoutes');
+
+// Rutas de administración de plataforma (sistema multi-tenant)
+const adminRoutes = require('./routes/adminRoutes'); // Deberás crear este archivo
 
 // Configuración
 dotenv.config();
@@ -25,14 +33,26 @@ app.use(cors({
   credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204,
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-ID']
 }));
 app.use(express.json());
 
 app.options('*', cors());
+
+// Middleware para identificar tenant basado en subdominio
+// Se aplica a todas las rutas excepto las de superadmin
+app.use((req, res, next) => {
+  // Si la ruta comienza con /api/admin, omitir el middleware de tenant
+  if (req.path.startsWith('/api/admin') || req.path === '/' || req.path === '/api/test') {
+    return next();
+  }
+  
+  tenantMiddleware(req, res, next);
+});
+
 // Ruta de prueba simple
 app.get('/', (req, res) => {
-  res.send('API del Sistema de Inventario funcionando correctamente');
+  res.send('API del Sistema Multi-Tenant de Inventario funcionando correctamente');
 });
 
 // Ruta de prueba para verificar la conexión a la base de datos
@@ -60,15 +80,6 @@ app.get('/api/test', async (req, res) => {
       error: error.message
     });
   }
-});
-
-// Añadir esto a tu server.js antes de las rutas de API
-app.get('/api/test', (req, res) => {
-  res.json({ 
-    message: 'API is working!', 
-    environment: process.env.NODE_ENV,
-    timestamp: new Date().toISOString()
-  });
 });
 
 // Inicializar aplicación
@@ -102,6 +113,11 @@ const init = async () => {
       setupFileUploadRoutes(connection, gfs);
       
       // Configurar las rutas del API después de que todo esté inicializado
+      
+      // Rutas de administración de la plataforma (no requieren tenant)
+      app.use('/api/admin', adminRoutes);
+      
+      // Rutas específicas de tenant (se aplica middleware de tenant)
       app.use('/api/auth', authRoutes); 
       app.use('/api/products', productRoutes);
       app.use('/api/purchases', purchaseRoutes);
@@ -154,12 +170,16 @@ function setupFileUploadRoutes(connection, gfs) {
   const storage = new GridFsStorage({
     db: connection,
     file: (req, file) => {
+      // Incluir el tenantId en los metadatos del archivo si está disponible
+      const metadata = {
+        mimetype: file.mimetype,
+        tenantId: req.tenant ? req.tenant._id.toString() : null
+      };
+
       return {
         filename: `${Date.now()}-${file.originalname}`,
         bucketName: 'uploads',
-        metadata: {
-          mimetype: file.mimetype
-        }
+        metadata
       };
     }
   });
@@ -239,6 +259,17 @@ function setupFileUploadRoutes(connection, gfs) {
       if (!file) {
         console.error('Archivo no encontrado para ID:', id);
         return res.status(404).send('Imagen no encontrada');
+      }
+      
+      // Verificar tenantId si no es superAdmin
+      if (req.tenant && req.user && req.user.role !== 'superAdmin') {
+        const fileTenantId = file.metadata?.tenantId;
+        const requestTenantId = req.tenant._id.toString();
+        
+        if (fileTenantId && fileTenantId !== requestTenantId) {
+          console.error('Intento de acceso no autorizado a archivo de otro tenant');
+          return res.status(403).send('No autorizado para acceder a esta imagen');
+        }
       }
       
       console.log('Archivo encontrado:', file.filename);

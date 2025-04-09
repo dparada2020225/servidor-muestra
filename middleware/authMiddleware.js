@@ -32,8 +32,18 @@ exports.protect = async (req, res, next) => {
       req.user = {
         id: cachedUser.user._id,
         username: cachedUser.user.username,
-        role: cachedUser.user.role
+        role: cachedUser.user.role,
+        tenantId: cachedUser.user.tenantId // Añadir tenantId al request
       };
+      
+      // Verificar que el usuario pertenece al tenant actual
+      if (req.tenant && 
+          req.user.role !== 'superAdmin' && 
+          req.user.tenantId && 
+          req.user.tenantId.toString() !== req.tenant._id.toString()) {
+        return res.status(403).json({ message: 'No tienes permiso para acceder a este tenant' });
+      }
+      
       return next();
     }
     
@@ -53,8 +63,17 @@ exports.protect = async (req, res, next) => {
     req.user = {
       id: user._id,
       username: user.username,
-      role: user.role
+      role: user.role,
+      tenantId: user.tenantId // Añadir tenantId al request
     };
+    
+    // Verificar que el usuario pertenece al tenant actual
+    if (req.tenant && 
+        req.user.role !== 'superAdmin' && 
+        req.user.tenantId && 
+        req.user.tenantId.toString() !== req.tenant._id.toString()) {
+      return res.status(403).json({ message: 'No tienes permiso para acceder a este tenant' });
+    }
     
     next();
   } catch (error) {
@@ -70,9 +89,46 @@ exports.protect = async (req, res, next) => {
 
 // Middleware para verificar si es admin
 exports.admin = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && (req.user.role === 'admin' || req.user.role === 'tenantAdmin')) {
     next();
   } else {
     res.status(403).json({ message: 'Acceso denegado, se requiere rol de administrador' });
   }
+};
+
+// Middleware para verificar si es superadmin
+exports.superAdmin = (req, res, next) => {
+  if (req.user && req.user.role === 'superAdmin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Acceso denegado, se requiere rol de superadministrador' });
+  }
+};
+
+// Middleware para validar permisos específicos
+exports.hasPermission = (permission) => {
+  return (req, res, next) => {
+    // Implementación simple - se podría expandir con un sistema real de permisos
+    const rolePermissions = {
+      superAdmin: ['*'], // Superadmin tiene todos los permisos
+      tenantAdmin: ['manage_users', 'manage_products', 'manage_sales', 'manage_purchases', 'view_reports'],
+      tenantManager: ['manage_products', 'manage_sales', 'manage_purchases', 'view_reports'],
+      tenantUser: ['view_products', 'create_sales']
+    };
+
+    // Si es superAdmin, siempre tiene permiso
+    if (req.user.role === 'superAdmin') {
+      return next();
+    }
+
+    // Verificar si el rol del usuario tiene el permiso requerido
+    const userPermissions = rolePermissions[req.user.role] || [];
+    if (userPermissions.includes(permission) || userPermissions.includes('*')) {
+      next();
+    } else {
+      res.status(403).json({ 
+        message: `Permiso denegado: se requiere el permiso "${permission}"`
+      });
+    }
+  };
 };

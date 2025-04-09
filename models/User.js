@@ -6,7 +6,6 @@ const userSchema = new mongoose.Schema({
   username: {
     type: String,
     required: true,
-    unique: true,
     trim: true
   },
   password: {
@@ -46,7 +45,9 @@ const userSchema = new mongoose.Schema({
 });
 
 // Índices compuestos para búsquedas eficientes
-userSchema.index({ tenantId: 1, username: 1 });
+// Índice compuesto de username y tenantId para permitir
+// el mismo nombre de usuario en diferentes tenants
+userSchema.index({ username: 1, tenantId: 1 }, { unique: true });
 userSchema.index({ tenantId: 1, role: 1 });
 
 // Middleware para hashear la contraseña antes de guardar

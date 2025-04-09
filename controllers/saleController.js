@@ -10,8 +10,14 @@ exports.createSale = async (req, res) => {
 
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para crear ventas' });
+    }
+
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
     }
 
     const { items, customer } = req.body;
@@ -33,13 +39,16 @@ exports.createSale = async (req, res) => {
         return res.status(400).json({ message: 'Datos de producto incompletos' });
       }
 
-      // Buscar producto
-      const product = await Product.findById(item.product).session(session);
+      // Buscar producto y verificar que pertenece al tenant
+      const product = await Product.findOne({
+        _id: item.product,
+        tenantId
+      }).session(session);
       
       if (!product) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(404).json({ message: `Producto con ID ${item.product} no encontrado` });
+        return res.status(404).json({ message: `Producto con ID ${item.product} no encontrado en este tenant` });
       }
 
       // Verificar stock suficiente
@@ -68,13 +77,14 @@ exports.createSale = async (req, res) => {
       await product.save({ session });
     }
 
-    // Crear registro de venta con el usuario actual
+    // Crear registro de venta con el usuario actual y tenant
     const sale = new Sale({
       date: new Date(),
       customer,
       items: saleItems,
       totalAmount,
-      user: req.user.id // Usar el ID del usuario que está haciendo la venta
+      user: req.user.id,
+      tenantId
     });
 
     await sale.save({ session });
@@ -93,12 +103,18 @@ exports.createSale = async (req, res) => {
 exports.getAllSales = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para ver las ventas' });
     }
 
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
     // Filtros para la consulta
-    const filter = {};
+    const filter = { tenantId };
     
     // Filtrar por fecha si se proporcionan startDate y endDate
     if (req.query.startDate && req.query.endDate) {
@@ -122,7 +138,7 @@ exports.getAllSales = async (req, res) => {
     }
 
     const sales = await Sale.find(filter)
-      .populate('user', 'username') // Poblar el campo user con el nombre de usuario
+      .populate('user', 'username')
       .populate('items.product', 'name')
       .sort({ date: -1 }); // Ordenar por fecha, más reciente primero
     
@@ -136,11 +152,20 @@ exports.getAllSales = async (req, res) => {
 exports.getSaleById = async (req, res) => {
   try {
     // Verificar si es admin
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenantAdmin') {
       return res.status(403).json({ message: 'No tienes permiso para ver esta venta' });
     }
 
-    const sale = await Sale.findById(req.params.id)
+    const tenantId = req.tenant ? req.tenant._id : null;
+    
+    if (!tenantId) {
+      return res.status(400).json({ message: 'Tenant no especificado' });
+    }
+
+    const sale = await Sale.findOne({
+      _id: req.params.id,
+      tenantId
+    })
       .populate('user', 'username')
       .populate('items.product', 'name');
     
