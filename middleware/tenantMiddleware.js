@@ -11,15 +11,14 @@ const extractTenantMiddleware = async (req, res, next) => {
       return next();
     }
     
-    // Extraer subdominio de la URL 
-    // Ejemplo: 'empresa1.midominio.com' -> 'empresa1'
+    // Extraer subdominio de la URL
     const host = req.headers.host;
     const hostParts = host.split('.');
     
     // Manejar diferentes ambientes
     let subdomain;
     
-    if (hostParts.length > 2) {
+    if (hostParts.length > 1) {
       // Entorno de producción o staging con subdominios
       subdomain = hostParts[0];
       
@@ -28,18 +27,17 @@ const extractTenantMiddleware = async (req, res, next) => {
         return res.status(400).json({ error: 'Subdominio inválido' });
       }
     } else {
-      // Para desarrollo local usando localhost
+      // Para desarrollo local usando localhost sin subdominio
       // Extraer de un header personalizado o query param
       subdomain = req.headers['x-tenant-id'] || req.query.tenant;
       
       if (!subdomain) {
-        // En desarrollo, podemos permitir una prueba sin tenant específico
-        if (process.env.NODE_ENV === 'development') {
-          return next();
-        }
+        // Si no hay subdominio ni parámetro, devolver error
         return res.status(400).json({ error: 'Tenant no especificado' });
       }
     }
+    
+    console.log(`Subdomain detectado: ${subdomain}`);
     
     // Buscar el tenant en la base de datos
     const tenant = await Tenant.findOne({ 
@@ -62,6 +60,7 @@ const extractTenantMiddleware = async (req, res, next) => {
     // Adjuntar tenant al objeto request
     req.tenant = tenant;
     req.tenantId = tenant._id;
+    console.log(`Tenant encontrado: ${tenant.name} (${tenant._id})`);
     
     next();
   } catch (error) {
