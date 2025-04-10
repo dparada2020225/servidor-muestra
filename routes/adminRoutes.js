@@ -2,14 +2,22 @@
 const express = require('express');
 const router = express.Router();
 const { protect, superAdmin } = require('../middleware/authMiddleware');
+const { requirePermission } = require('../middleware/permissionsMiddleware');
 const Tenant = require('../models/Tenant');
 const User = require('../models/User');
+const auditService = require('../services/auditService');
+
+// Importar controladores
+const auditController = require('../controllers/auditController');
 
 // Todas las rutas requieren autenticación
 router.use(protect);
 
 // Todas las rutas requieren ser superAdmin
 router.use(superAdmin);
+
+// Conectar rutas de auditoría
+router.use('/audit', require('./auditRoutes'));
 
 /**
  * @route   GET /api/admin/tenants
@@ -19,6 +27,18 @@ router.use(superAdmin);
 router.get('/tenants', async (req, res) => {
   try {
     const tenants = await Tenant.find({}).select('-__v').sort({ createdAt: -1 });
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'tenant',
+      description: 'Listado de todos los tenants',
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
     res.status(200).json(tenants);
   } catch (error) {
     console.error('Error al obtener tenants:', error);
@@ -38,6 +58,18 @@ router.get('/tenants/:id', async (req, res) => {
     if (!tenant) {
       return res.status(404).json({ message: 'Tenant no encontrado' });
     }
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'tenant',
+      entityId: tenant._id,
+      description: `Visualización detallada del tenant: ${tenant.name}`,
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
     
     res.status(200).json(tenant);
   } catch (error) {
@@ -123,6 +155,23 @@ router.post('/tenants', async (req, res) => {
     
     await adminUser.save();
     
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'create',
+      entityType: 'tenant',
+      entityId: tenant._id,
+      description: `Creación del tenant: ${tenant.name} (${tenant.subdomain})`,
+      details: {
+        plan: tenant.plan,
+        status: tenant.status,
+        adminUser: adminUser.username
+      },
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
     res.status(201).json({
       tenant,
       adminUser: {
@@ -160,6 +209,13 @@ router.put('/tenants/:id', async (req, res) => {
     if (!tenant) {
       return res.status(404).json({ message: 'Tenant no encontrado' });
     }
+    
+    // Guardar estado anterior para auditoría
+    const previousState = {
+      name: tenant.name,
+      status: tenant.status,
+      plan: tenant.plan
+    };
     
     // Actualizar propiedades
     if (name) tenant.name = name;
@@ -207,6 +263,28 @@ router.put('/tenants/:id', async (req, res) => {
     }
     
     await tenant.save();
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'update',
+      entityType: 'tenant',
+      entityId: tenant._id,
+      description: `Actualización del tenant: ${tenant.name}`,
+      details: {
+        previous: previousState,
+        current: {
+          name: tenant.name,
+          status: tenant.status,
+          plan: tenant.plan
+        },
+        changes: Object.keys(req.body)
+      },
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
     res.status(200).json({ tenant, message: 'Tenant actualizado exitosamente' });
     
   } catch (error) {
@@ -228,9 +306,28 @@ router.delete('/tenants/:id', async (req, res) => {
       return res.status(404).json({ message: 'Tenant no encontrado' });
     }
     
+    // Guardar estado anterior para auditoría
+    const previousStatus = tenant.status;
+    
     // No eliminar realmente, solo cambiar estado
     tenant.status = 'cancelled';
     await tenant.save();
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'delete',
+      entityType: 'tenant',
+      entityId: tenant._id,
+      description: `Desactivación del tenant: ${tenant.name}`,
+      details: {
+        previousStatus,
+        newStatus: 'cancelled'
+      },
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
     
     res.status(200).json({ message: 'Tenant desactivado exitosamente' });
   } catch (error) {
@@ -269,6 +366,17 @@ router.get('/stats', async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(5)
       .select('name subdomain status plan createdAt');
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'setting',
+      description: 'Visualización de estadísticas de plataforma',
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
     
     res.status(200).json({
       totalTenants: tenantsCount,
@@ -331,6 +439,18 @@ router.post('/superadmins', async (req, res) => {
     
     await superAdmin.save();
     
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'create',
+      entityType: 'user',
+      entityId: superAdmin._id,
+      description: `Creación de superadmin: ${superAdmin.username}`,
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
     // No devolver la contraseña en la respuesta
     const response = {
       _id: superAdmin._id,
@@ -361,6 +481,17 @@ router.get('/superadmins', async (req, res) => {
       .select('-password -__v')
       .sort({ createdAt: -1 });
     
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'user',
+      description: 'Listado de todos los superadmins',
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
     res.status(200).json(superAdmins);
   } catch (error) {
     console.error('Error al obtener superadmins:', error);
@@ -389,8 +520,27 @@ router.put('/tenant/:tenantId/status', async (req, res) => {
       return res.status(404).json({ message: 'Tenant no encontrado' });
     }
     
+    // Guardar estado anterior para auditoría
+    const previousStatus = tenant.status;
+    
     tenant.status = status;
     await tenant.save();
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: status === 'suspended' ? 'suspend' : 'activate',
+      entityType: 'tenant',
+      entityId: tenant._id,
+      description: `Cambio de estado del tenant ${tenant.name} de ${previousStatus} a ${status}`,
+      details: {
+        previousStatus,
+        newStatus: status
+      },
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
     
     res.status(200).json({ message: `Estado del tenant actualizado a ${status}`, tenant });
     
@@ -407,9 +557,27 @@ router.put('/tenant/:tenantId/status', async (req, res) => {
  */
 router.get('/tenant/:tenantId/users', async (req, res) => {
   try {
+    const tenant = await Tenant.findById(req.params.tenantId);
+    
+    if (!tenant) {
+      return res.status(404).json({ message: 'Tenant no encontrado' });
+    }
+    
     const users = await User.find({ tenantId: req.params.tenantId })
       .select('-password -__v')
       .sort({ createdAt: -1 });
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'user',
+      description: `Listado de usuarios del tenant: ${tenant.name}`,
+      tenantId: tenant._id,
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
     
     res.status(200).json(users);
   } catch (error) {
@@ -444,6 +612,24 @@ router.post('/impersonate/:userId', async (req, res) => {
       process.env.JWT_SECRET || 'your_jwt_secret_key',
       { expiresIn: '1h' } // Token con vida limitada para seguridad
     );
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'impersonate',
+      entityType: 'user',
+      entityId: targetUser._id,
+      description: `Impersonación del usuario: ${targetUser.username}`,
+      details: {
+        impersonatedUserRole: targetUser.role,
+        tenantId: targetUser.tenantId ? targetUser.tenantId.toString() : null
+      },
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      impersonatedBy: req.user.id,
+      tenantId: targetUser.tenantId,
+      ipAddress: req.ip
+    });
     
     res.status(200).json({
       message: 'Impersonación autorizada',
