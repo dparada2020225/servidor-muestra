@@ -175,16 +175,28 @@ function setupFileUploadRoutes(connection, gfs) {
       // Incluir el tenantId en los metadatos del archivo
       let tenantId = null;
       
+      // Intentar obtener el tenant de diferentes fuentes
       if (req.tenant) {
         tenantId = req.tenant._id.toString();
       } else if (req.headers['x-tenant-id']) {
-        // Si viene en el header pero no se procesó por el middleware
         tenantId = req.headers['x-tenant-id'];
+      } else if (req.body && req.body.tenantId) {
+        tenantId = req.body.tenantId;
       }
       
       if (!tenantId) {
-        throw new Error('No se pudo identificar el tenant para la subida de archivo');
+        console.error('No se pudo identificar el tenant para la subida:', {
+          headers: req.headers,
+          body: req.body,
+          tenant: req.tenant
+        });
+        throw new Error('No se pudo identificar el tenant para la subida');
       }
+      
+      console.log(`Subiendo archivo para tenant: ${tenantId}`, {
+        filename: file.originalname,
+        mimetype: file.mimetype
+      });
       
       const metadata = {
         mimetype: file.mimetype,
@@ -221,13 +233,12 @@ function setupFileUploadRoutes(connection, gfs) {
   app.post('/upload', upload.single('image'), async (req, res) => {
     try {
       // Verificar que hay un tenant en la solicitud
-      if (!req.tenant) {
+      if (!req.tenant && !req.headers['x-tenant-id'] && (!req.body || !req.body.tenantId)) {
         console.error('Intento de subida sin tenant identificado');
         return res.status(400).json({ message: 'No se pudo identificar el tenant para la subida' });
       }
       
       console.log('Archivo recibido en upload:', req.file);
-      console.log('Tenant para la subida:', req.tenant.subdomain);
       
       if (!req.file) {
         return res.status(400).json({ message: 'No se subió ningún archivo' });
@@ -236,7 +247,7 @@ function setupFileUploadRoutes(connection, gfs) {
       // Obtener el ID del archivo subido
       const fileId = req.file.id;
       
-      // Verificar que se guardó correctamente y tiene el tenantId
+      // Verificar que se guardó correctamente
       const file = await connection.db.collection('uploads.files').findOne({ _id: fileId });
       
       if (!file) {
@@ -244,15 +255,22 @@ function setupFileUploadRoutes(connection, gfs) {
       }
       
       // Asegurarse de que el tenantId está en los metadatos
-      if (!file.metadata?.tenantId) {
-        // Actualizar el archivo para añadir el tenantId si no se guardó correctamente
-        await connection.db.collection('uploads.files').updateOne(
-          { _id: fileId },
-          { $set: { 'metadata.tenantId': req.tenant._id.toString() } }
-        );
+      let tenantId = file.metadata?.tenantId;
+      if (!tenantId) {
+        // Si no se guardó el tenantId en los metadatos, intentar actualizarlo
+        tenantId = req.tenant ? req.tenant._id.toString() : 
+                  req.headers['x-tenant-id'] || 
+                  (req.body ? req.body.tenantId : null);
+        
+        if (tenantId) {
+          await connection.db.collection('uploads.files').updateOne(
+            { _id: fileId },
+            { $set: { 'metadata.tenantId': tenantId } }
+          );
+        }
       }
       
-      console.log('Archivo guardado con ID:', fileId, 'para tenant:', req.tenant.subdomain);
+      console.log('Archivo guardado con ID:', fileId, 'para tenant:', tenantId);
       
       res.status(201).json({ 
         imageId: fileId.toString(),
@@ -261,101 +279,40 @@ function setupFileUploadRoutes(connection, gfs) {
       });
     } catch (error) {
       console.error('Error en la subida de archivo:', error);
-      res.status(500).json({ message: 'Error interno al subir archivo', error: error.toString() });
+      res.status(500).json({ 
+        message: 'Error interno al subir archivo', 
+        error: error.toString(),
+        stack: error.stack
+      });
     }
   });
-  app.get('/images/:id', imageController.getImage);
 
-  // Ruta para obtener imágenes
-  app.get('/images/:id', async (req, res) => {
-    try {
-      const id = req.params.id;
-      console.log('Solicitando imagen ID:', id);
-      
-      // Permitir acceso directo a imágenes en entorno de desarrollo
-      const isDevEnvironment = process.env.NODE_ENV === 'development';
-      
-      // En desarrollo, podemos omitir la verificación de tenant
-      if (!isDevEnvironment) {
-        // Verificar tenant solo en producción
-        if (!req.tenant) {
-          // En producción, intentar obtener tenant del query param
-          if (req.query.tenantId) {
-            const tenant = await Tenant.findOne({ subdomain: req.query.tenantId });
-            if (tenant) {
-              req.tenant = tenant;
-            } else {
-              return res.status(400).json({ error: 'Tenant no especificado' });
-            }
-          } else {
-            return res.status(400).json({ error: 'Tenant no especificado' });
-          }
-        }
-      } else {
-        console.log('Entorno de desarrollo: omitiendo verificación de tenant para imagen');
-      }
-      
-      let objectId;
-      try {
-        objectId = new mongoose.Types.ObjectId(id);
-      } catch (err) {
-        console.error('ID de imagen inválido:', err);
-        return res.status(400).send('ID de imagen inválido');
-      }
-      
-      // Buscar el archivo directamente en la colección
-      const file = await connection.db.collection('uploads.files').findOne({ _id: objectId });
-      
-      if (!file) {
-        console.error('Archivo no encontrado para ID:', id);
-        return res.status(404).send('Imagen no encontrada');
-      }
-      
-      // Verificar tenantId solo en producción
-      if (!isDevEnvironment && req.tenant) {
-        const fileTenantId = file.metadata?.tenantId;
-        const requestTenantId = req.tenant._id.toString();
-        
-        if (fileTenantId && fileTenantId !== requestTenantId) {
-          console.error('Intento de acceso no autorizado a archivo de otro tenant');
-          return res.status(403).send('No autorizado para acceder a esta imagen');
-        }
-      }
-      
-      // Establecer el tipo de contenido
-      res.set('Content-Type', file.contentType || file.metadata?.mimetype || 'image/png');
-      
-      // Obtener los chunks manualmente
-      const chunks = await connection.db.collection('uploads.chunks')
-        .find({ files_id: objectId })
-        .sort({ n: 1 })
-        .toArray();
-      
-      if (!chunks || chunks.length === 0) {
-        console.error('No se encontraron chunks para el archivo');
-        return res.status(404).send('No se encontraron datos para la imagen');
-      }
-      
-      // Concatenar los chunks en un solo buffer
-      let fileData;
-      try {
-        fileData = chunks.reduce((acc, chunk) => {
-          return Buffer.concat([acc, chunk.data.buffer]);
-        }, Buffer.alloc(0));
-      } catch (err) {
-        console.error('Error al procesar chunks:', err);
-        return res.status(500).send('Error al procesar datos de imagen');
-      }
-      
-      // Enviar el buffer como respuesta
-      res.send(fileData);
-      
-    } catch (error) {
-      console.error('Error al obtener imagen:', error);
-      res.status(500).send('Error del servidor al recuperar la imagen');
-    }
-  });
+  // Usar el controlador para la ruta de imágenes
+  app.get('/images/:id', imageController.getImage);
+  
+  // Eliminar la implementación duplicada de la ruta de imágenes si existe
 }
+
+  app.get('/api/debug/upload-status', (req, res) => {
+    // Verificar tenant desde las diferentes fuentes
+    const tenantFromHeader = req.headers['x-tenant-id'];
+    const tenantFromQuery = req.query.tenant;
+    const tenantFromBody = req.body ? req.body.tenantId : undefined;
+    const tenantFromReq = req.tenant ? req.tenant.subdomain : undefined;
+    
+    // Devolver información de depuración
+    res.json({
+      tenant: {
+        fromHeader: tenantFromHeader,
+        fromQuery: tenantFromQuery,
+        fromBody: tenantFromBody,
+        fromReq: tenantFromReq
+      },
+      headers: req.headers,
+      cookies: req.cookies,
+      session: req.session
+    });
+  });
 
 if (process.env.NODE_ENV === 'development') {
   app.get('/api/debug/gridfs', async (req, res) => {
