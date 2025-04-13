@@ -1,6 +1,8 @@
-// controllers/authController.js
+// controllers/authController.js - actualizado
 const User = require('../models/User');
+const Tenant = require('../models/Tenant');
 const jwt = require('jsonwebtoken');
+const auditService = require('../services/auditService');
 
 // Cache para usuarios (almacena resultados por un corto período)
 let usersCache = {
@@ -34,13 +36,13 @@ exports.register = async (req, res) => {
       }
     }
 
-    const { username, password, role } = req.body;
+    const { username, password, role, email, firstName, lastName } = req.body;
     
-    // Obtener tenantId del contexto actual
-    const tenantId = req.tenant ? req.tenant._id : null;
+    // Obtener tenantId del contexto actual o del cuerpo de la solicitud
+    let tenantId = req.tenant ? req.tenant._id : req.body.tenantId;
     
-    // Si no es superAdmin, se requiere tenantId
-    if (!tenantId && req.user.role !== 'superAdmin') {
+    // Si es superAdmin y no proporciona tenantId, se permite (será null)
+    if (!tenantId && req.user?.role !== 'superAdmin') {
       return res.status(400).json({ message: 'Se requiere tenant para crear usuario' });
     }
     
@@ -59,7 +61,11 @@ exports.register = async (req, res) => {
       username,
       password,
       role: role || 'tenantUser', // Por defecto es 'tenantUser'
-      tenantId
+      tenantId,
+      email,
+      firstName,
+      lastName,
+      isActive: true
     });
     
     await newUser.save();
@@ -69,15 +75,32 @@ exports.register = async (req, res) => {
       _id: newUser._id,
       username: newUser.username,
       role: newUser.role,
-      tenantId: newUser.tenantId
+      tenantId: newUser.tenantId,
+      email: newUser.email,
+      firstName: newUser.firstName,
+      lastName: newUser.lastName
     };
     
     // Invalidar caché después de crear un nuevo usuario
     usersCache.data = null;
     
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'create',
+      entityType: 'user',
+      entityId: newUser._id,
+      description: `Creación de usuario: ${newUser.username} con rol ${newUser.role}`,
+      userId: req.user ? req.user.id : null,
+      username: req.user ? req.user.username : 'Sistema',
+      userRole: req.user ? req.user.role : 'sistema',
+      tenantId,
+      ipAddress: req.ip
+    });
+    
     res.status(201).json({ message: 'Usuario creado exitosamente', user: userResponse });
     
   } catch (error) {
+    console.error('Error al registrar usuario:', error);
     res.status(500).json({ message: 'Error al registrar usuario', error: error.message });
   }
 };
@@ -85,17 +108,33 @@ exports.register = async (req, res) => {
 // Iniciar sesión
 exports.login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, tenantId } = req.body;
+    console.log('Intento de login:', { username, tenantId: tenantId || 'No tenant especificado' });
     
-    // Si hay un tenant en el contexto, buscar el usuario en ese tenant
-    const tenantId = req.tenant ? req.tenant._id : null;
+    // Buscar tenant si se proporciona un ID o usar el del contexto
+    let tenant = null;
+    if (tenantId) {
+      tenant = await Tenant.findOne({ subdomain: tenantId });
+      console.log('Tenant encontrado por subdomain:', tenant ? tenant.name : 'No encontrado');
+      
+      // Verificar estado del tenant
+      if (tenant && tenant.status === 'suspended') {
+        return res.status(403).json({ message: 'Este tenant está suspendido temporalmente' });
+      }
+      if (tenant && tenant.status === 'cancelled') {
+        return res.status(403).json({ message: 'Este tenant ha sido cancelado' });
+      }
+    } else if (req.tenant) {
+      tenant = req.tenant;
+      console.log('Usando tenant del contexto:', tenant.name);
+    }
     
     // Buscar usuario
     let query = { username };
     
-    // Solo agregar tenantId al query si existe en el contexto (para subdominios específicos)
-    if (tenantId) {
-      query.tenantId = tenantId;
+    // Si hay un tenant, restringir la búsqueda a ese tenant
+    if (tenant) {
+      query.tenantId = tenant._id;
     }
     
     const user = await User.findOne(query);
@@ -109,8 +148,31 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: 'Credenciales inválidas' });
     }
     
+    // Si es superAdmin puede iniciar sesión sin importar el tenant
+    // Para otros roles, verificar que pertenezcan al tenant correcto
+    if (user.role !== 'superAdmin' && tenant && user.tenantId.toString() !== tenant._id.toString()) {
+      return res.status(403).json({ message: 'No tienes acceso a este tenant' });
+    }
+    
     // Generar token
     const token = generateToken(user);
+    
+    // Actualizar último login
+    user.lastLogin = new Date();
+    await user.save();
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'login',
+      entityType: 'user',
+      entityId: user._id,
+      description: `Inicio de sesión: ${user.username}`,
+      userId: user._id,
+      username: user.username,
+      userRole: user.role,
+      tenantId: user.tenantId,
+      ipAddress: req.ip
+    });
     
     // Respuesta
     res.status(200).json({
@@ -120,7 +182,10 @@ exports.login = async (req, res) => {
         _id: user._id,
         username: user.username,
         role: user.role,
-        tenantId: user.tenantId
+        tenantId: user.tenantId,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName
       }
     });
     
@@ -138,11 +203,17 @@ exports.getAllUsers = async (req, res) => {
       return res.status(403).json({ message: 'Acceso denegado' });
     }
     
-    const tenantId = req.tenant ? req.tenant._id : null;
+    let tenantId = null;
     
-    // Si no es superAdmin, se requiere tenantId
-    if (!tenantId && req.user.role !== 'superAdmin') {
-      return res.status(400).json({ message: 'Se requiere tenant para listar usuarios' });
+    // Si no es superAdmin, debe filtrar por tenant
+    if (req.user.role !== 'superAdmin') {
+      tenantId = req.user.tenantId;
+      if (!tenantId) {
+        return res.status(400).json({ message: 'Tenant no identificado' });
+      }
+    } else if (req.tenant) {
+      // Si es superAdmin pero hay un tenant en el contexto, usarlo
+      tenantId = req.tenant._id;
     }
     
     // Forzar actualización si se proporciona un parámetro específico
@@ -157,18 +228,18 @@ exports.getAllUsers = async (req, res) => {
         usersCache.data && 
         usersCache.data[cacheKey] && 
         (now - usersCache.timestamp < usersCache.expiryTime)) {
-      console.log('Retornando usuarios desde caché');
+      console.log('Retornando usuarios desde caché para:', cacheKey);
       // Añadir encabezados para indicar que se está usando caché
       res.setHeader('X-Cache', 'HIT');
       return res.status(200).json(usersCache.data[cacheKey]);
     }
     
-    console.log('Consultando usuarios desde base de datos');
+    console.log('Consultando usuarios desde base de datos para:', cacheKey);
     
     // Si no hay caché o expiró, consultar la base de datos
     let query = {};
     
-    // Si es un admin de tenant, solo listar usuarios de su tenant
+    // Si es un admin de tenant o se específica un tenant, filtrar por tenantId
     if (tenantId) {
       query.tenantId = tenantId;
     }
@@ -183,6 +254,18 @@ exports.getAllUsers = async (req, res) => {
     // Actualizar caché
     usersCache.data[cacheKey] = users;
     usersCache.timestamp = now;
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'user',
+      description: 'Listado de usuarios',
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      tenantId: tenantId,
+      ipAddress: req.ip
+    });
     
     // Indicar que los datos son frescos
     res.setHeader('X-Cache', 'MISS');
@@ -215,6 +298,7 @@ exports.getCurrentUser = async (req, res) => {
     
     res.status(200).json(user);
   } catch (error) {
+    console.error('Error al obtener usuario actual:', error);
     res.status(500).json({ message: 'Error al obtener usuario', error: error.message });
   }
 };
