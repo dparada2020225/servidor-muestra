@@ -6,8 +6,24 @@ const Tenant = require('../models/Tenant');
  */
 const extractTenantMiddleware = async (req, res, next) => {
   try {
-    // Si la ruta comienza con /api/admin, es para el panel de superadmin
-    if (req.path.startsWith('/api/admin')) {
+    // Lista de rutas que no requieren verificación de tenant
+    const excludedPaths = [
+      '/api/admin',
+      '/images/',
+      '/api/debug',
+      '/upload'
+    ];
+
+    // Verificar si la ruta actual debe excluirse de la verificación de tenant
+    for (const path of excludedPaths) {
+      if (req.path.startsWith(path)) {
+        console.log(`Ruta ${req.path} excluida de verificación de tenant`);
+        return next();
+      }
+    }
+    
+    // Si es una ruta básica como '/' o rutas de test
+    if (req.path === '/' || req.path === '/api/test') {
       return next();
     }
     

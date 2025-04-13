@@ -8,7 +8,8 @@ const { GridFsStorage } = require('multer-gridfs-storage');
 const Grid = require('gridfs-stream');
 const path = require('path');
 const { connectDB } = require('./db');
-
+const Tenant = require('./models/Tenant');
+const imageController = require('./controllers/imageController');
 // Importar middlewares
 const tenantMiddleware = require('./middleware/tenantMiddleware');
 
@@ -122,6 +123,7 @@ const init = async () => {
       app.use('/api/products', productRoutes);
       app.use('/api/purchases', purchaseRoutes);
       app.use('/api/sales', saleRoutes);
+      app.use(tenantMiddleware);
       
       // Ruta para listar todos los archivos en GridFS (para diagnóstico)
       app.get('/gridfs-files', async (req, res) => {
@@ -170,10 +172,24 @@ function setupFileUploadRoutes(connection, gfs) {
   const storage = new GridFsStorage({
     db: connection,
     file: (req, file) => {
-      // Incluir el tenantId en los metadatos del archivo si está disponible
+      // Incluir el tenantId en los metadatos del archivo
+      let tenantId = null;
+      
+      if (req.tenant) {
+        tenantId = req.tenant._id.toString();
+      } else if (req.headers['x-tenant-id']) {
+        // Si viene en el header pero no se procesó por el middleware
+        tenantId = req.headers['x-tenant-id'];
+      }
+      
+      if (!tenantId) {
+        throw new Error('No se pudo identificar el tenant para la subida de archivo');
+      }
+      
       const metadata = {
         mimetype: file.mimetype,
-        tenantId: req.tenant ? req.tenant._id.toString() : null
+        tenantId: tenantId,
+        originalName: file.originalname
       };
 
       return {
@@ -204,46 +220,80 @@ function setupFileUploadRoutes(connection, gfs) {
   // Ruta para subir imágenes
   app.post('/upload', upload.single('image'), async (req, res) => {
     try {
+      // Verificar que hay un tenant en la solicitud
+      if (!req.tenant) {
+        console.error('Intento de subida sin tenant identificado');
+        return res.status(400).json({ message: 'No se pudo identificar el tenant para la subida' });
+      }
+      
       console.log('Archivo recibido en upload:', req.file);
+      console.log('Tenant para la subida:', req.tenant.subdomain);
       
       if (!req.file) {
         return res.status(400).json({ message: 'No se subió ningún archivo' });
       }
       
-      // Verificar que el archivo se guardó correctamente
+      // Obtener el ID del archivo subido
       const fileId = req.file.id;
-      console.log('Archivo guardado con ID:', fileId);
       
-      // Verificar que el archivo existe en GridFS
+      // Verificar que se guardó correctamente y tiene el tenantId
       const file = await connection.db.collection('uploads.files').findOne({ _id: fileId });
       
       if (!file) {
-        console.error('El archivo subido no se encuentra en GridFS');
         return res.status(500).json({ message: 'Error al guardar el archivo' });
       }
       
-      console.log('Archivo confirmado en GridFS:', file._id.toString());
+      // Asegurarse de que el tenantId está en los metadatos
+      if (!file.metadata?.tenantId) {
+        // Actualizar el archivo para añadir el tenantId si no se guardó correctamente
+        await connection.db.collection('uploads.files').updateOne(
+          { _id: fileId },
+          { $set: { 'metadata.tenantId': req.tenant._id.toString() } }
+        );
+      }
       
-      // Verificar que existen chunks
-      const chunkCount = await connection.db.collection('uploads.chunks').countDocuments({ files_id: fileId });
-      console.log('Chunks almacenados para el archivo:', chunkCount);
+      console.log('Archivo guardado con ID:', fileId, 'para tenant:', req.tenant.subdomain);
       
       res.status(201).json({ 
-        imageId: file._id.toString(),
+        imageId: fileId.toString(),
         filename: file.filename,
-        contentType: file.contentType
+        contentType: file.contentType || file.metadata?.mimetype
       });
     } catch (error) {
       console.error('Error en la subida de archivo:', error);
       res.status(500).json({ message: 'Error interno al subir archivo', error: error.toString() });
     }
   });
+  app.get('/images/:id', imageController.getImage);
 
   // Ruta para obtener imágenes
   app.get('/images/:id', async (req, res) => {
     try {
       const id = req.params.id;
       console.log('Solicitando imagen ID:', id);
+      
+      // Permitir acceso directo a imágenes en entorno de desarrollo
+      const isDevEnvironment = process.env.NODE_ENV === 'development';
+      
+      // En desarrollo, podemos omitir la verificación de tenant
+      if (!isDevEnvironment) {
+        // Verificar tenant solo en producción
+        if (!req.tenant) {
+          // En producción, intentar obtener tenant del query param
+          if (req.query.tenantId) {
+            const tenant = await Tenant.findOne({ subdomain: req.query.tenantId });
+            if (tenant) {
+              req.tenant = tenant;
+            } else {
+              return res.status(400).json({ error: 'Tenant no especificado' });
+            }
+          } else {
+            return res.status(400).json({ error: 'Tenant no especificado' });
+          }
+        }
+      } else {
+        console.log('Entorno de desarrollo: omitiendo verificación de tenant para imagen');
+      }
       
       let objectId;
       try {
@@ -261,8 +311,8 @@ function setupFileUploadRoutes(connection, gfs) {
         return res.status(404).send('Imagen no encontrada');
       }
       
-      // Verificar tenantId si no es superAdmin
-      if (req.tenant && req.user && req.user.role !== 'superAdmin') {
+      // Verificar tenantId solo en producción
+      if (!isDevEnvironment && req.tenant) {
         const fileTenantId = file.metadata?.tenantId;
         const requestTenantId = req.tenant._id.toString();
         
@@ -272,10 +322,8 @@ function setupFileUploadRoutes(connection, gfs) {
         }
       }
       
-      console.log('Archivo encontrado:', file.filename);
-      
       // Establecer el tipo de contenido
-      res.set('Content-Type', file.contentType || 'image/png');
+      res.set('Content-Type', file.contentType || file.metadata?.mimetype || 'image/png');
       
       // Obtener los chunks manualmente
       const chunks = await connection.db.collection('uploads.chunks')
@@ -289,10 +337,15 @@ function setupFileUploadRoutes(connection, gfs) {
       }
       
       // Concatenar los chunks en un solo buffer
-      const fileData = chunks.reduce((acc, chunk) => {
-        // Si acc es buffer, concatenar con el buffer del chunk
-        return Buffer.concat([acc, chunk.data.buffer]);
-      }, Buffer.alloc(0));
+      let fileData;
+      try {
+        fileData = chunks.reduce((acc, chunk) => {
+          return Buffer.concat([acc, chunk.data.buffer]);
+        }, Buffer.alloc(0));
+      } catch (err) {
+        console.error('Error al procesar chunks:', err);
+        return res.status(500).send('Error al procesar datos de imagen');
+      }
       
       // Enviar el buffer como respuesta
       res.send(fileData);
@@ -304,6 +357,51 @@ function setupFileUploadRoutes(connection, gfs) {
   });
 }
 
+if (process.env.NODE_ENV === 'development') {
+  app.get('/api/debug/gridfs', async (req, res) => {
+    try {
+      // Comprobar si las colecciones existen
+      const collections = await connection.db.listCollections().toArray();
+      const collectionNames = collections.map(c => c.name);
+      
+      // Buscar colecciones de GridFS
+      const hasFiles = collectionNames.includes('uploads.files');
+      const hasChunks = collectionNames.includes('uploads.chunks');
+      
+      let files = [];
+      let filesCount = 0;
+      let chunksCount = 0;
+      
+      if (hasFiles) {
+        files = await connection.db.collection('uploads.files').find().toArray();
+        filesCount = files.length;
+      }
+      
+      if (hasChunks) {
+        chunksCount = await connection.db.collection('uploads.chunks').countDocuments();
+      }
+      
+      res.json({
+        collections: collectionNames,
+        hasFiles,
+        hasChunks,
+        filesCount,
+        chunksCount,
+        files: files.map(f => ({
+          id: f._id.toString(),
+          filename: f.filename,
+          contentType: f.contentType,
+          length: f.length,
+          uploadDate: f.uploadDate,
+          metadata: f.metadata
+        }))
+      });
+    } catch (error) {
+      console.error('Error en depuración GridFS:', error);
+      res.status(500).json({ error: error.toString() });
+    }
+  });
+}
 // Iniciar la aplicación
 init();
 
