@@ -18,6 +18,7 @@ const productRoutes = require('./routes/productRoutes');
 const authRoutes = require('./routes/authRoutes'); 
 const purchaseRoutes = require('./routes/purchaseRoutes');
 const saleRoutes = require('./routes/saleRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
 
 // Rutas de administración de plataforma (sistema multi-tenant)
 const adminRoutes = require('./routes/adminRoutes'); // Deberás crear este archivo
@@ -104,7 +105,7 @@ const init = async () => {
         setupGridFS(conn);
       });
     }
-    
+    app.use('/api/dashboard', dashboardRoutes);
     function setupGridFS(connection) {
       gfs = Grid(connection.db, mongoose.mongo);
       gfs.collection('uploads');
@@ -123,6 +124,7 @@ const init = async () => {
       app.use('/api/products', productRoutes);
       app.use('/api/purchases', purchaseRoutes);
       app.use('/api/sales', saleRoutes);
+      app.use('/api/dashboard', dashboardRoutes);
       app.use(tenantMiddleware);
       
       // Ruta para listar todos los archivos en GridFS (para diagnóstico)
