@@ -129,6 +129,15 @@ exports.login = async (req, res) => {
       console.log('Usando tenant del contexto:', tenant.name);
     }
     
+    if (!tenant && req.headers.host) {
+      const hostParts = req.headers.host.split('.');
+      if (hostParts.length > 1 && hostParts[0] !== 'www') {
+        const subdomain = hostParts[0];
+        tenant = await Tenant.findOne({ subdomain });
+        console.log(`Detectado tenant desde el host: ${subdomain}, encontrado:`, tenant ? 'Sí' : 'No');
+      }
+    }
+    
     // Buscar usuario
     let query = { username };
     

@@ -30,42 +30,55 @@ const extractTenantMiddleware = async (req, res, next) => {
     // Extraer subdominio de la URL o headers
     let subdomain;
     
-    // Primero intentar desde headers específicos
+    // MODIFICACIÓN IMPORTANTE: Orden de prioridad para detectar el tenant
+    
+    // 1. Primero intentar desde el header específico X-Tenant-ID
     if (req.headers['x-tenant-id']) {
       subdomain = req.headers['x-tenant-id'];
       console.log(`Tenant obtenido de header X-Tenant-ID: ${subdomain}`);
     } 
-    // Luego intentar desde el host
-    else {
-      const host = req.headers.host;
-      const hostParts = host.split('.');
-      
-      // Entorno de producción o staging con subdominios
-      if (hostParts.length > 1) {
-        subdomain = hostParts[0];
-        
-        // Ignorar subdominios especiales como 'www' o 'api'
-        if (subdomain === 'www' || subdomain === 'api' || subdomain === 'admin') {
-          return res.status(400).json({ error: 'Subdominio inválido' });
-        }
-      } 
-      // Para desarrollo local usando localhost sin subdominio
-      else {
-        // Extraer de un query param
-        subdomain = req.query.tenant;
-        
-        if (!subdomain) {
-          // Si no hay subdominio ni parámetro, devolver error
-          return res.status(400).json({ error: 'Tenant no especificado' });
-        }
-      }
-      console.log(`Subdomain detectado: ${subdomain}`);
+    // 2. Luego intentar desde query params (para compatibilidad con desarrollo)
+    else if (req.query.tenantId) {
+      subdomain = req.query.tenantId;
+      console.log(`Tenant obtenido de query param tenantId: ${subdomain}`);
     }
-    
-    // Si tenemos el subdomain en body (para formularios), es prioritario
-    if (req.body && req.body.tenantId) {
+    // 3. Luego intentar desde el body (para formularios)
+    else if (req.body && req.body.tenantId) {
       subdomain = req.body.tenantId;
       console.log(`Tenant obtenido del body: ${subdomain}`);
+    }
+    // 4. Por último intentar desde el host
+    else {
+      const host = req.headers.host;
+      console.log(`Analizando host: ${host}`);
+      
+      if (host) {
+        const hostParts = host.split('.');
+        
+        // Para desarrollo con subdominio en localhost
+        if (hostParts.length > 1) {
+          subdomain = hostParts[0];
+          
+          // Ignorar subdominios especiales
+          if (subdomain === 'www' || subdomain === 'api' || subdomain === 'admin') {
+            return res.status(400).json({ error: 'Subdominio inválido' });
+          }
+          
+          console.log(`Subdominio extraído del host: ${subdomain}`);
+        } 
+        else {
+          // No se pudo detectar subdominio
+          return res.status(400).json({ error: 'Tenant no especificado' });
+        }
+      } else {
+        // No hay host en el header
+        return res.status(400).json({ error: 'Host no especificado' });
+      }
+    }
+    
+    // Validar subdomain
+    if (!subdomain || subdomain === 'www' || subdomain === 'api' || subdomain === 'admin') {
+      return res.status(400).json({ message: 'Subdomain inválido' });
     }
     
     // Buscar el tenant en la base de datos
@@ -75,7 +88,7 @@ const extractTenantMiddleware = async (req, res, next) => {
     });
     
     if (!tenant) {
-      return res.status(404).json({ error: 'Tenant no encontrado' });
+      return res.status(404).json({ message: 'Tenant no encontrado' });
     }
     
     // Si el tenant está suspendido, mostrar mensaje específico
