@@ -8,6 +8,134 @@ const User = require('../models/User');
 const auditService = require('../services/auditService');
 
 /**
+ * @route   GET /api/tenants
+ * @desc    Obtener lista de todos los tenants (para superadmin)
+ * @access  Private (SuperAdmin)
+ */
+router.get('/', protect, async (req, res) => {
+  try {
+    // Verificar que sea superAdmin
+    if (req.user.role !== 'superAdmin') {
+      return res.status(403).json({ message: 'Acceso denegado. Solo disponible para SuperAdmin' });
+    }
+    
+    // Obtener parámetros de consulta para filtrado y paginación
+    const { status, plan, search, page = 1, limit = 10, sort = 'createdAt', order = 'desc' } = req.query;
+    
+    // Construir filtro
+    const filter = {};
+    if (status) filter.status = status;
+    if (plan) filter.plan = plan;
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { subdomain: { $regex: search, $options: 'i' } },
+        { 'contactInfo.email': { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    // Configurar ordenamiento
+    const sortOption = {};
+    sortOption[sort] = order === 'asc' ? 1 : -1;
+    
+    // Calcular skip para paginación
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Ejecutar consulta con paginación
+    const tenants = await Tenant.find(filter)
+      .select('-billing.paymentDetails') // Excluir datos sensibles de pago
+      .sort(sortOption)
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    // Obtener conteo total para paginación
+    const total = await Tenant.countDocuments(filter);
+    
+    // Registrar en auditoría
+    await auditService.logAction({
+      action: 'view',
+      entityType: 'tenant',
+      description: 'Listado de tenants',
+      userId: req.user.id,
+      username: req.user.username,
+      userRole: req.user.role,
+      ipAddress: req.ip
+    });
+    
+    // Devolver respuesta paginada
+    res.status(200).json({
+      tenants,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Error al obtener tenants:', error);
+    res.status(500).json({ message: 'Error del servidor', error: error.message });
+  }
+});
+
+/**
+ * @route   GET /api/tenants/check-subdomain/:subdomain
+ * @desc    Verificar disponibilidad de un subdominio
+ * @access  Public
+ */
+router.get('/check-subdomain/:subdomain', async (req, res) => {
+  try {
+    const { subdomain } = req.params;
+    
+    // Validar formato del subdominio
+    const subdomainRegex = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+    if (!subdomainRegex.test(subdomain)) {
+      return res.status(400).json({ 
+        available: false,
+        message: 'Formato de subdominio inválido. Debe contener solo letras minúsculas, números y guiones, sin comenzar ni terminar con guión.',
+        valid: false
+      });
+    }
+    
+    // Verificar si es un subdominio reservado
+    const reservedSubdomains = ['www', 'api', 'admin', 'app', 'mail', 'smtp', 'pop', 'ftp', 'support', 'help', 'billing'];
+    if (reservedSubdomains.includes(subdomain)) {
+      return res.status(400).json({ 
+        available: false,
+        message: 'Este subdominio está reservado y no está disponible.',
+        valid: true
+      });
+    }
+    
+    // Verificar si ya existe en la base de datos
+    const existingTenant = await Tenant.findOne({ subdomain });
+    
+    if (existingTenant) {
+      return res.status(200).json({ 
+        available: false, 
+        message: 'Este subdominio ya está en uso.',
+        valid: true
+      });
+    }
+    
+    // Si no existe, está disponible
+    res.status(200).json({ 
+      available: true, 
+      message: 'Este subdominio está disponible.',
+      valid: true
+    });
+  } catch (error) {
+    console.error('Error al verificar subdominio:', error);
+    res.status(500).json({ 
+      available: false, 
+      message: 'Error al verificar disponibilidad del subdominio.',
+      valid: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * @route   GET /api/tenants/:subdomain
  * @desc    Obtener información de un tenant por subdominio (ruta pública)
  * @access  Public
