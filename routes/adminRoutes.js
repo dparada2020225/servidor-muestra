@@ -143,6 +143,7 @@ router.post('/tenants', async (req, res) => {
     
     // Crear el primer usuario administrador del tenant
     const adminPassword = Math.random().toString(36).slice(-8); // Generar contraseña aleatoria
+    console.log("adminPassword: ", adminPassword)
     
     const adminUser = new User({
       username: `admin_${subdomain}`,
