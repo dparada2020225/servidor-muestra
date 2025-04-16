@@ -96,6 +96,9 @@ const init = async () => {
     // Inicializar GridFS
     let gfs;
     const conn = mongoose.connection;
+
+    app.use('/api/users', userRoutes);
+    app.use('/api/tenants', tenantRoutes);
     
     // Asegurarse de que la conexión esté completamente abierta
     if (conn.readyState === 1) {
