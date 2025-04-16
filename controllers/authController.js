@@ -105,12 +105,72 @@ exports.register = async (req, res) => {
   }
 };
 
-// Iniciar sesión
+// Función de login actualizada en controllers/authController.js
 exports.login = async (req, res) => {
   try {
     const { username, password, tenantId } = req.body;
     console.log('Intento de login:', { username, tenantId: tenantId || 'No tenant especificado' });
     
+// En controllers/authController.js, en exports.login
+// Manejo especial para superadmin
+if (username === 'superadmin') {
+  console.log('Detectado intento de login como superadmin');
+  
+  // Buscar al superadmin sin filtrar por tenant
+  const superAdmin = await User.findOne({ username, role: 'superAdmin' });
+  
+  if (!superAdmin) {
+    return res.status(401).json({ message: 'Credenciales inválidas' });
+  }
+  
+  // Verificar contraseña
+  const isMatch = await superAdmin.comparePassword(password);
+  if (!isMatch) {
+    return res.status(401).json({ message: 'Credenciales inválidas' });
+  }
+  
+  // Generar token (sin tenantId)
+  const token = jwt.sign(
+    { 
+      id: superAdmin._id, 
+      username: superAdmin.username, 
+      role: superAdmin.role
+      // No incluimos tenantId para superAdmin
+    },
+    process.env.JWT_SECRET || 'your_jwt_secret_key',
+    { expiresIn: '24h' }
+  );
+  
+  // Actualizar último login
+  superAdmin.lastLogin = new Date();
+  await superAdmin.save();
+  
+  // Registrar en auditoría
+  await auditService.logAction({
+    action: 'login',
+    entityType: 'user',
+    entityId: superAdmin._id,
+    description: `Inicio de sesión: ${superAdmin.username} (superAdmin)`,
+    userId: superAdmin._id,
+    username: superAdmin.username,
+    userRole: superAdmin.role,
+    ipAddress: req.ip
+  });
+  
+  // Respuesta
+  return res.status(200).json({
+    message: 'Login exitoso (superAdmin)',
+    token,
+    user: {
+      _id: superAdmin._id,
+      username: superAdmin.username,
+      role: superAdmin.role,
+      email: superAdmin.email
+    }
+  });
+}
+    
+    // Proceso normal para usuarios no superadmin
     // Buscar tenant si se proporciona un ID o usar el del contexto
     let tenant = null;
     if (tenantId) {

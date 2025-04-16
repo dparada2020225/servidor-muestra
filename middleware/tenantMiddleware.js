@@ -1,5 +1,6 @@
 // middleware/tenantMiddleware.js
 const Tenant = require('../models/Tenant');
+const jwt = require('jsonwebtoken');
 
 /**
  * Middleware para extraer y validar el tenant basado en el subdominio
@@ -27,12 +28,25 @@ const extractTenantMiddleware = async (req, res, next) => {
       return next();
     }
     
-    // Extraer subdominio de la URL o headers
-    let subdomain;
+    // Verificar si es un superadmin por el token (excepción especial)
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      const token = req.headers.authorization.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_key');
+        if (decoded.role === 'superAdmin') {
+          console.log("Acceso de superAdmin detectado, omitiendo verificación de tenant");
+          return next();
+        }
+      } catch (tokenError) {
+        console.error("Error al verificar token:", tokenError);
+        // Continuar con la verificación normal de tenant
+      }
+    }
     
     // MODIFICACIÓN IMPORTANTE: Orden de prioridad para detectar el tenant
     
     // 1. Primero intentar desde el header específico X-Tenant-ID
+    let subdomain;
     if (req.headers['x-tenant-id']) {
       subdomain = req.headers['x-tenant-id'];
       console.log(`Tenant obtenido de header X-Tenant-ID: ${subdomain}`);
