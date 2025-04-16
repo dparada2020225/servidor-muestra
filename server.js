@@ -10,6 +10,7 @@ const path = require('path');
 const { connectDB } = require('./db');
 const Tenant = require('./models/Tenant');
 const imageController = require('./controllers/imageController');
+
 // Importar middlewares
 const tenantMiddleware = require('./middleware/tenantMiddleware');
 
@@ -19,9 +20,13 @@ const authRoutes = require('./routes/authRoutes');
 const purchaseRoutes = require('./routes/purchaseRoutes');
 const saleRoutes = require('./routes/saleRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
-
-// Rutas de administración de plataforma (sistema multi-tenant)
-const adminRoutes = require('./routes/adminRoutes'); // Deberás crear este archivo
+const adminRoutes = require('./routes/adminRoutes');
+const userRoutes = require('./routes/userRoutes'); // Nueva
+const tenantRoutes = require('./routes/tenantRoutes'); // Nueva
+const customerRoutes = require('./routes/customerRoutes'); // Nueva
+const supplierRoutes = require('./routes/supplierRoutes'); // Nueva
+const tenantSettingsRoutes = require('./routes/tenantSettingsRoutes'); // Nueva - si existe
+const { reportsController, exportController } = require('./controllers/reportsController'); // Para crear rutas
 
 // Configuración
 dotenv.config();
@@ -96,9 +101,6 @@ const init = async () => {
     // Inicializar GridFS
     let gfs;
     const conn = mongoose.connection;
-
-    app.use('/api/users', userRoutes);
-    app.use('/api/tenants', tenantRoutes);
     
     // Asegurarse de que la conexión esté completamente abierta
     if (conn.readyState === 1) {
@@ -108,7 +110,7 @@ const init = async () => {
         setupGridFS(conn);
       });
     }
-    app.use('/api/dashboard', dashboardRoutes);
+
     function setupGridFS(connection) {
       gfs = Grid(connection.db, mongoose.mongo);
       gfs.collection('uploads');
@@ -123,11 +125,36 @@ const init = async () => {
       app.use('/api/admin', adminRoutes);
       
       // Rutas específicas de tenant (se aplica middleware de tenant)
-      app.use('/api/auth', authRoutes); 
+      app.use('/api/auth', authRoutes);
+      app.use('/api/users', userRoutes);
+      app.use('/api/tenants', tenantRoutes);
       app.use('/api/products', productRoutes);
       app.use('/api/purchases', purchaseRoutes);
       app.use('/api/sales', saleRoutes);
       app.use('/api/dashboard', dashboardRoutes);
+      app.use('/api/customers', customerRoutes);
+      app.use('/api/suppliers', supplierRoutes);
+      
+      // Crear rutas para reportes y exportación
+      // (usando controladores existentes)
+      const reportsRouter = express.Router();
+      reportsRouter.get('/sales', reportsController.getSalesReport);
+      reportsRouter.get('/purchases', reportsController.getPurchasesReport);
+      reportsRouter.get('/inventory', reportsController.getInventoryReport);
+      app.use('/api/reports', reportsRouter);
+      
+      const exportsRouter = express.Router();
+      exportsRouter.get('/products', exportController.exportProducts);
+      exportsRouter.get('/sales', exportController.exportSales);
+      exportsRouter.get('/purchases', exportController.exportPurchases);
+      app.use('/api/exports', exportsRouter);
+      
+      // Ruta para configuraciones de tenant si existe
+      if (typeof tenantSettingsRoutes !== 'undefined') {
+        app.use('/api/tenant/settings', tenantSettingsRoutes);
+      }
+      
+      // Aplicar middleware de tenant para todas las rutas que lo requieran
       app.use(tenantMiddleware);
       
       // Ruta para listar todos los archivos en GridFS (para diagnóstico)
@@ -294,30 +321,28 @@ function setupFileUploadRoutes(connection, gfs) {
 
   // Usar el controlador para la ruta de imágenes
   app.get('/images/:id', imageController.getImage);
-  
-  // Eliminar la implementación duplicada de la ruta de imágenes si existe
 }
 
-  app.get('/api/debug/upload-status', (req, res) => {
-    // Verificar tenant desde las diferentes fuentes
-    const tenantFromHeader = req.headers['x-tenant-id'];
-    const tenantFromQuery = req.query.tenant;
-    const tenantFromBody = req.body ? req.body.tenantId : undefined;
-    const tenantFromReq = req.tenant ? req.tenant.subdomain : undefined;
-    
-    // Devolver información de depuración
-    res.json({
-      tenant: {
-        fromHeader: tenantFromHeader,
-        fromQuery: tenantFromQuery,
-        fromBody: tenantFromBody,
-        fromReq: tenantFromReq
-      },
-      headers: req.headers,
-      cookies: req.cookies,
-      session: req.session
-    });
+app.get('/api/debug/upload-status', (req, res) => {
+  // Verificar tenant desde las diferentes fuentes
+  const tenantFromHeader = req.headers['x-tenant-id'];
+  const tenantFromQuery = req.query.tenant;
+  const tenantFromBody = req.body ? req.body.tenantId : undefined;
+  const tenantFromReq = req.tenant ? req.tenant.subdomain : undefined;
+  
+  // Devolver información de depuración
+  res.json({
+    tenant: {
+      fromHeader: tenantFromHeader,
+      fromQuery: tenantFromQuery,
+      fromBody: tenantFromBody,
+      fromReq: tenantFromReq
+    },
+    headers: req.headers,
+    cookies: req.cookies,
+    session: req.session
   });
+});
 
 if (process.env.NODE_ENV === 'development') {
   app.get('/api/debug/gridfs', async (req, res) => {
@@ -364,6 +389,7 @@ if (process.env.NODE_ENV === 'development') {
     }
   });
 }
+
 // Iniciar la aplicación
 init();
 
