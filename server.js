@@ -21,12 +21,20 @@ const purchaseRoutes = require('./routes/purchaseRoutes');
 const saleRoutes = require('./routes/saleRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const adminRoutes = require('./routes/adminRoutes');
-const userRoutes = require('./routes/userRoutes'); // Nueva
-const tenantRoutes = require('./routes/tenantRoutes'); // Nueva
-const customerRoutes = require('./routes/customerRoutes'); // Nueva
-const supplierRoutes = require('./routes/supplierRoutes'); // Nueva
-const tenantSettingsRoutes = require('./routes/tenantSettingsRoutes'); // Nueva - si existe
-const { reportsController, exportController } = require('./controllers/reportsController'); // Para crear rutas
+const userRoutes = require('./routes/userRoutes');
+const tenantRoutes = require('./routes/tenantRoutes');
+const customerRoutes = require('./routes/customerRoutes');
+const supplierRoutes = require('./routes/supplierRoutes');
+const tenantSettingsRoutes = require('./routes/tenantSettingsRoutes');
+const { reportsController, exportController } = require('./controllers/reportsController');
+
+// Importar nuevas rutas
+const adminMetricsRoutes = require('./routes/adminMetricsRoutes');
+const adminLogsRoutes = require('./routes/adminLogsRoutes');
+const adminPlatformRoutes = require('./routes/adminPlatformRoutes');
+const tenantUIRoutes = require('./routes/tenantUIRoutes');
+const tenantThemesRoutes = require('./routes/tenantThemesRoutes');
+const tenantTemplatesRoutes = require('./routes/tenantTemplatesRoutes');
 
 // Configuración
 dotenv.config();
@@ -124,6 +132,11 @@ const init = async () => {
       // Rutas de administración de la plataforma (no requieren tenant)
       app.use('/api/admin', adminRoutes);
       
+      // Nuevas rutas admin
+      app.use('/api/admin/metrics', adminMetricsRoutes);
+      app.use('/api/admin/logs', adminLogsRoutes);
+      app.use('/api/admin/platform', adminPlatformRoutes);
+      
       // Rutas específicas de tenant (se aplica middleware de tenant)
       app.use('/api/auth', authRoutes);
       app.use('/api/users', userRoutes);
@@ -134,6 +147,11 @@ const init = async () => {
       app.use('/api/dashboard', dashboardRoutes);
       app.use('/api/customers', customerRoutes);
       app.use('/api/suppliers', supplierRoutes);
+      
+      // Nuevas rutas de tenant
+      app.use('/api/tenant/ui', tenantUIRoutes);
+      app.use('/api/tenant/themes', tenantThemesRoutes);
+      app.use('/api/tenant/templates', tenantTemplatesRoutes);
       
       // Crear rutas para reportes y exportación
       // (usando controladores existentes)
@@ -149,10 +167,8 @@ const init = async () => {
       exportsRouter.get('/purchases', exportController.exportPurchases);
       app.use('/api/exports', exportsRouter);
       
-      // Ruta para configuraciones de tenant si existe
-      if (typeof tenantSettingsRoutes !== 'undefined') {
-        app.use('/api/tenant/settings', tenantSettingsRoutes);
-      }
+      // Ruta para configuraciones de tenant
+      app.use('/api/tenant/settings', tenantSettingsRoutes);
       
       // Aplicar middleware de tenant para todas las rutas que lo requieran
       app.use(tenantMiddleware);
