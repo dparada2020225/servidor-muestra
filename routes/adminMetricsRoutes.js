@@ -1,17 +1,15 @@
-// routes/adminPlatformRoutes.js
+// routes/adminMetricsRoutes.js
 const express = require('express');
 const router = express.Router();
-const adminPlatformController = require('../controllers/adminPlatformController');
+const adminMetricsController = require('../controllers/adminMetricsController');
 const { protect, superAdmin } = require('../middleware/authMiddleware');
 
 // Todas las rutas requieren autenticación y permisos de superadmin
 router.use(protect);
 router.use(superAdmin);
 
-// Rutas para configuración global de la plataforma
-router.get('/config', adminPlatformController.getPlatformConfig);
-router.put('/config', adminPlatformController.updatePlatformConfig);
-router.post('/config/reset', adminPlatformController.resetPlatformConfig);
-router.post('/maintenance', adminPlatformController.toggleMaintenanceMode);
+// Rutas para métricas y estadísticas de administración
+router.get('/usage', adminMetricsController.getTenantUsageMetrics);
+router.get('/growth', adminMetricsController.getGrowthMetrics);
 
 module.exports = router;
