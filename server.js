@@ -32,6 +32,9 @@ const { reportsController, exportController } = require('./controllers/reportsCo
 const adminMetricsRoutes = require('./routes/adminMetricsRoutes');
 const adminLogsRoutes = require('./routes/adminLogsRoutes');
 const adminPlatformRoutes = require('./routes/adminPlatformRoutes');
+const adminTenantActionRoutes = require('./routes/adminTenantActionRoutes');
+const adminStatisticsRoutes = require('./routes/adminStatisticsRoutes');
+const adminUserManagementRoutes = require('./routes/adminUserManagementRoutes');
 const tenantUIRoutes = require('./routes/tenantUIRoutes');
 const tenantThemesRoutes = require('./routes/tenantThemesRoutes');
 const tenantTemplatesRoutes = require('./routes/tenantTemplatesRoutes');
@@ -136,6 +139,9 @@ const init = async () => {
       app.use('/api/admin/metrics', adminMetricsRoutes);
       app.use('/api/admin/logs', adminLogsRoutes);
       app.use('/api/admin/platform', adminPlatformRoutes);
+      app.use('/api/admin/tenants', adminTenantActionRoutes);
+      app.use('/api/admin/statistics', adminStatisticsRoutes);
+      app.use('/api/admin/users', adminUserManagementRoutes);
       
       // Rutas específicas de tenant (se aplica middleware de tenant)
       app.use('/api/auth', authRoutes);
